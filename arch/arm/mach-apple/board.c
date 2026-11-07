@@ -4,10 +4,12 @@
  */
 
 #include <dm.h>
+#include <dm/device-internal.h>
 #include <dm/uclass-internal.h>
 #include <command.h>
 #include <efi_loader.h>
 #include <env.h>
+#include <event.h>
 #include <fs.h>
 #include <iomux.h>
 #include <u-boot/uuid.h>
@@ -21,9 +23,11 @@
 #include <linux/ioport.h>
 #include <linux/delay.h>
 
+#include <asm/arch/j773g-usb.h>
 #include <asm/arch/track-a.h>
 #include <asm/armv8/mmu.h>
 #include <asm/global_data.h>
+#include <asm/gpio.h>
 #include <asm/io.h>
 #include <asm/system.h>
 #include <asm/arch/rtkit.h>
@@ -1607,6 +1611,150 @@ static void apple_typec_late_init(void)
 		env_set("preboot", "");
 }
 
+/*
+ * TEST ONLY: J773g boot-menu track A3.  Drive the front USB hub lines before
+ * preboot's "usb start", as the U1 DT's gpio-hogs do for Linux:
+ * usb3hub-flash-oe (GPIO 101) and usb3hub-reset (GPIO 198) on the AP
+ * pinctrl, active-high, output-high (high = hub out of reset).  U-Boot's
+ * generic gpio-hog support cannot do this here: the Apple GPIO device only
+ * exists once the pinctrl has probed, which nothing does before "usb start".
+ * Only these two pins are touched, only with the values the DT hog nodes
+ * give, and the pin registers before/after go to /chosen/u-boot,m4-log.
+ * The lines stay high through the OS handoff; Linux re-hogs them high.
+ */
+#define J773G_HUB_SETTLE_MS	100
+
+static const struct {
+	u32 pin;
+	const char *name;
+} j773g_hub_lines[J773G_HUB_LINES] = {
+	{ J773G_HUB_FLASH_OE_PIN, J773G_HUB_FLASH_OE_NAME },
+	{ J773G_HUB_RESET_PIN, J773G_HUB_RESET_NAME },
+};
+
+/*
+ * Track A3 gate.  Until the front hub lines are set up, nothing the J773g USB
+ * policy admits (the front dwc3, its ATC PHY, its two DARTs: matched by
+ * properties, whatever their node names or paths) may probe.  The check runs
+ * on EVT_DM_PRE_PROBE, before device_probe() powers a domain, probes a parent
+ * or connects an IOMMU.  A lookup error refuses the probe as well.
+ */
+static enum j773g_usb_hub j773g_usb_hub = J773G_USB_HUB_PENDING;
+
+enum j773g_usb_hub j773g_usb_hub_state(void)
+{
+	return j773g_usb_hub;
+}
+
+/* Global, not static: clang can drop a static linker-list spy (event.h). */
+int j773g_usb_probe_gate_spy(void *ctx, struct event *event)
+{
+	struct udevice *dev = event->data.dm.dev;
+	int ret;
+
+	if (!of_machine_is_compatible("apple,j773g") || !dev_has_ofnode(dev))
+		return 0;
+	ret = j773g_usb_probe_gate(gd->fdt_blob, dev_of_offset(dev), j773g_usb_hub);
+	if (ret)
+		log_err("%s: front USB not admitted (hub %d): %d\n", dev->name,
+			j773g_usb_hub, ret);
+	return ret;
+}
+EVENT_SPY_FULL(EVT_DM_PRE_PROBE, j773g_usb_probe_gate_spy);
+
+/*
+ * Hub setup failed: close the gate for good, clear preboot's "usb start"
+ * (logged, not relied on), and unbind every bound USB controller the policy
+ * admits, found by walking the USB uclass rather than by name, so neither
+ * preboot nor bootflow's "usb" target can start one, and xhci_dwc3_bind()
+ * refuses to bind it again.  Any lookup or unbind error stops here: panic
+ * resets before Linux.
+ */
+static void j773g_usb_block(const char *why)
+{
+	struct udevice *dev, *next;
+	struct uclass *uc;
+	int env, ret, n = 0;
+
+	j773g_usb_hub = J773G_USB_HUB_BLOCKED;
+	env = env_set("preboot", "");
+	ret = uclass_get(UCLASS_USB, &uc);
+	if (ret)
+		panic("hub: %s; USB uclass lookup failed (%d)\n", why, ret);
+	uclass_foreach_dev_safe(dev, next, uc) {
+		if (!dev_has_ofnode(dev))
+			continue;
+		ret = j773g_usb_probe_gate(gd->fdt_blob, dev_of_offset(dev),
+					   J773G_USB_HUB_BLOCKED);
+		if (!ret)
+			continue;	/* not front USB */
+		if (ret != -EPERM)
+			panic("hub: %s; %s lookup failed (%d)\n", why, dev->name, ret);
+		if (device_active(dev))
+			panic("hub: %s; %s already active\n", why, dev->name);
+		ret = device_unbind(dev);
+		if (ret)
+			panic("hub: %s; %s unbind failed (%d)\n", why, dev->name, ret);
+		n++;
+	}
+	m4_track_a_note("hub: %s; USB blocked (preboot %d, unbound %d)", why, env, n);
+}
+
+static void j773g_front_hub_gpios(void)
+{
+	ofnode pctl = ofnode_path("/soc/pinctrl@39a000000");
+	struct udevice *pinctrl, *gpio;
+	void __iomem *base;
+	const char *why;
+	u32 pins[J773G_HUB_LINES];
+	int i, ret;
+
+	if (!ofnode_valid(pctl) ||
+	    !ofnode_device_is_compatible(pctl, "apple,t8103-pinctrl")) {
+		j773g_usb_block("no pinctrl node");
+		return;
+	}
+	/*
+	 * All hogs under the controller, parsed in full before any line is
+	 * touched (asm/arch/j773g-usb.h): anything malformed, truncated,
+	 * contradictory or duplicated fails setup.
+	 */
+	if (j773g_hub_hogs_check(gd->fdt_blob, ofnode_to_offset(pctl), pins, &why)) {
+		j773g_usb_block(why);
+		return;
+	}
+	/* Probing the pinctrl binds its GPIO child (same node). */
+	if (uclass_get_device_by_ofnode(UCLASS_PINCTRL, pctl, &pinctrl) ||
+	    uclass_get_device_by_ofnode(UCLASS_GPIO, pctl, &gpio)) {
+		j773g_usb_block("no gpio");
+		return;
+	}
+	base = dev_read_addr_ptr(pinctrl);
+	if (!base) {
+		j773g_usb_block("no pinctrl registers");
+		return;
+	}
+
+	for (i = 0; i < J773G_HUB_LINES; i++) {
+		struct gpio_desc desc = { .dev = gpio, .offset = pins[i] };
+		u32 pre = readl(base + 4 * pins[i]);
+
+		ret = dm_gpio_request(&desc, j773g_hub_lines[i].name);
+		if (!ret)
+			ret = dm_gpio_set_dir_flags(&desc, GPIOD_IS_OUT |
+						    GPIOD_IS_OUT_ACTIVE);
+		m4_track_a_note("hub gpio%u pre=%x post=%x ret=%d", pins[i], pre,
+				readl(base + 4 * pins[i]), ret);
+		if (ret) {
+			j773g_usb_block("hub line not driven");
+			return;
+		}
+	}
+
+	mdelay(J773G_HUB_SETTLE_MS);
+	j773g_usb_hub = J773G_USB_HUB_OK;
+}
+
 int board_late_init(void)
 {
 	bool start_keyboard = true;
@@ -1622,6 +1770,9 @@ int board_late_init(void)
 	 */
 	if (of_machine_is_compatible("apple,j773g"))
 		env_set("bootdelay", "-2");
+
+	if (of_machine_is_compatible("apple,j773g"))
+		j773g_front_hub_gpios();
 
 	env_set("storage_interface", blk_get_uclass_name(UCLASS_NVME));
 	env_set("fw_dev_part", asahi_esp_devpart());

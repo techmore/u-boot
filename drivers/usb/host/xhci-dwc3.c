@@ -274,6 +274,9 @@ static int xhci_dwc3_bind(struct udevice *dev)
 	const char *why;
 
 	if (of_machine_is_compatible("apple,j773g")) {
+		/* Track A3: no rebinding once hub setup has failed. */
+		if (j773g_usb_hub_state() == J773G_USB_HUB_BLOCKED)
+			return -ENODEV;
 		if (j773g_usb_node_allowed(gd->fdt_blob, dev_of_offset(dev),
 					   J773G_USB_DWC3, NULL, &why)) {
 			log_debug("%s: refused: %s\n", dev->name, why);
