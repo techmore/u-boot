@@ -1494,13 +1494,16 @@ static void apple_efi_late_init(bool start_keyboard)
 	 * Replace the generic Apple defaults unless a saved environment
 	 * changed them.  USB is neither started at boot nor a boot target
 	 * until the USB-C PHY support has been validated; "usb start" still
-	 * works by hand.
+	 * works by hand.  The J773g (Mac mini) has no built-in keyboard, so
+	 * it keeps "usb start" for a USB keyboard; USB stays off its boot
+	 * targets.
 	 */
 	if (!strcmp(env_get("bootcmd") ?: "", CONFIG_BOOTCOMMAND))
 		env_set("bootcmd", "run aurora_boot");
 	if (!strcmp(env_get("boot_targets") ?: "", "nvme usb"))
 		env_set("boot_targets", "nvme");
-	if (!strcmp(env_get("preboot") ?: "", "usb start"))
+	if (!strcmp(env_get("preboot") ?: "", "usb start") &&
+	    !of_machine_is_compatible("apple,j773g"))
 		env_set("preboot", "");
 	/* EFI ConIn uses the active stdin; keep serial input available. */
 	if (start_keyboard && IS_ENABLED(CONFIG_APPLE_MTP_KEYB) &&
