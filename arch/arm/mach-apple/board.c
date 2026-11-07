@@ -25,6 +25,7 @@
 #include <asm/arch/track-a.h>
 #include <asm/armv8/mmu.h>
 #include <asm/global_data.h>
+#include <asm/gpio.h>
 #include <asm/io.h>
 #include <asm/system.h>
 #include <asm/arch/rtkit.h>
@@ -1627,11 +1628,91 @@ void board_quiesce_devices(void)
 	m4_track_a_note("handoff usb_stop ret=%d", ret);
 }
 
+/*
+ * TEST ONLY: J773g boot-menu track A3.  Drive the front USB hub lines before
+ * preboot's "usb start", as the U1 DT's gpio-hogs do for Linux:
+ * usb3hub-flash-oe (GPIO 101) and usb3hub-reset (GPIO 198) on the AP
+ * pinctrl, active-high, output-high (high = hub out of reset).  U-Boot's
+ * generic gpio-hog support cannot do this here: the Apple GPIO device only
+ * exists once the pinctrl has probed, which nothing does before "usb start".
+ * Only these two pins are touched, only with the values the DT hog nodes
+ * give, and the pin registers before/after go to /chosen/u-boot,m4-log.
+ * The lines stay high through the OS handoff; Linux re-hogs them high.
+ */
+#define J773G_HUB_SETTLE_MS	100
+
+static const struct {
+	u32 pin;
+	const char *name;
+} j773g_hub_lines[] = {
+	{ 101, "usb3hub-flash-oe" },
+	{ 198, "usb3hub-reset" },
+};
+
+static void j773g_front_hub_gpios(void)
+{
+	ofnode pctl = ofnode_path("/soc/pinctrl@39a000000");
+	struct udevice *pinctrl, *gpio;
+	void __iomem *base;
+	ofnode hog;
+	int done = 0;
+
+	if (!ofnode_valid(pctl) ||
+	    !ofnode_device_is_compatible(pctl, "apple,t8103-pinctrl"))
+		return;
+	/* Probing the pinctrl binds its GPIO child (same node). */
+	if (uclass_get_device_by_ofnode(UCLASS_PINCTRL, pctl, &pinctrl) ||
+	    uclass_get_device_by_ofnode(UCLASS_GPIO, pctl, &gpio)) {
+		m4_track_a_note("hub: no gpio");
+		return;
+	}
+	base = dev_read_addr_ptr(pinctrl);
+
+	ofnode_for_each_subnode(hog, pctl) {
+		struct gpio_desc desc = { .dev = gpio };
+		const char *name = ofnode_read_string(hog, "line-name");
+		u32 args[2], pre;
+		int i, ret;
+
+		if (!ofnode_read_bool(hog, "gpio-hog") || !name ||
+		    ofnode_read_u32_array(hog, "gpios", args, 2))
+			continue;
+		for (i = 0; i < ARRAY_SIZE(j773g_hub_lines); i++) {
+			if (j773g_hub_lines[i].pin == args[0] &&
+			    !strcmp(j773g_hub_lines[i].name, name))
+				break;
+		}
+		/* Unknown line, active-low, or not output-high: leave it alone. */
+		if (i == ARRAY_SIZE(j773g_hub_lines) || args[1] != 0 ||
+		    !ofnode_read_bool(hog, "output-high")) {
+			m4_track_a_note("hub: skip %s", name);
+			continue;
+		}
+
+		pre = readl(base + 4 * args[0]);
+		desc.offset = args[0];
+		ret = dm_gpio_request(&desc, name);
+		if (!ret)
+			ret = dm_gpio_set_dir_flags(&desc, GPIOD_IS_OUT |
+						    GPIOD_IS_OUT_ACTIVE);
+		m4_track_a_note("hub gpio%u pre=%x post=%x ret=%d", args[0], pre,
+				readl(base + 4 * args[0]), ret);
+		if (!ret)
+			done++;
+	}
+
+	if (done)
+		mdelay(J773G_HUB_SETTLE_MS);
+}
+
 int board_late_init(void)
 {
 	bool start_keyboard = true;
 	u32 status = 0;
 	phys_addr_t addr;
+
+	if (of_machine_is_compatible("apple,j773g"))
+		j773g_front_hub_gpios();
 
 	env_set("storage_interface", blk_get_uclass_name(UCLASS_NVME));
 	env_set("fw_dev_part", asahi_esp_devpart());
