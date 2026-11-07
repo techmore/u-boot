@@ -831,6 +831,28 @@ static void tcpm_pd_ctrl_request(struct udevice *dev,
 	}
 }
 
+static void tcpm_recover_data_role_mismatch(struct udevice *dev)
+{
+	struct tcpm_port *port = dev_get_uclass_plat(dev);
+
+	dev_err(dev, "TCPM: data role mismatch, initiating error recovery\n");
+	if (port->self_powered) {
+		tcpm_set_state(dev, ERROR_RECOVERY, 0);
+		return;
+	}
+
+	/*
+	 * The error recovery will not help for devices, which are not
+	 * self-powered because the error recovery avoids killing the board
+	 * power. Since this can happen early on sending
+	 * a DR_SWAP request is not sensible. Instead let's change our own
+	 * data role. It can be swapped back once USB-PD reached the ready
+	 * state.
+	 */
+	tcpm_set_roles(dev, true, port->pwr_role,
+		       port->data_role == TYPEC_HOST ? TYPEC_DEVICE : TYPEC_HOST);
+}
+
 static void tcpm_pd_rx_handler(struct udevice *dev,
 			       const struct pd_message *msg)
 {
@@ -865,9 +887,11 @@ static void tcpm_pd_rx_handler(struct udevice *dev,
 		remote_is_host = !!(le16_to_cpu(msg->header) & PD_HEADER_DATA_ROLE);
 		local_is_host = port->data_role == TYPEC_HOST;
 		if (remote_is_host == local_is_host) {
-			dev_err(dev, "TCPM: data role mismatch, initiating error recovery\n");
-			tcpm_set_state(dev, ERROR_RECOVERY, 0);
-		} else {
+			tcpm_recover_data_role_mismatch(dev);
+			local_is_host = port->data_role == TYPEC_HOST;
+		}
+
+		if (remote_is_host != local_is_host) {
 			if (cnt)
 				tcpm_pd_data_request(dev, msg);
 			else
@@ -1422,7 +1446,8 @@ static inline enum tcpm_state hard_reset_state(struct tcpm_port *port)
 		return ERROR_RECOVERY;
 	if (port->pwr_role == TYPEC_SOURCE)
 		return SRC_UNATTACHED;
-	if (port->state == SNK_WAIT_CAPABILITIES)
+	if (port->state == SNK_WAIT_CAPABILITIES ||
+	    port->state == SNK_WAIT_CAPABILITIES_TIMEOUT)
 		return SNK_READY;
 	return SNK_UNATTACHED;
 }
@@ -1648,9 +1673,34 @@ static void run_state_machine(struct udevice *dev)
 			tcpm_set_state(dev, SOFT_RESET_SEND,
 				       PD_T_SINK_WAIT_CAP);
 		} else {
-			tcpm_set_state(dev, hard_reset_state(port),
-				       PD_T_SINK_WAIT_CAP);
+			if (!port->self_powered)
+				tcpm_set_state(dev, SNK_WAIT_CAPABILITIES_TIMEOUT,
+					       PD_T_SINK_WAIT_CAP);
+			else
+				tcpm_set_state(dev, hard_reset_state(port),
+					       PD_T_SINK_WAIT_CAP);
 		}
+		break;
+	case SNK_WAIT_CAPABILITIES_TIMEOUT:
+		/*
+		 * There are some USB PD sources in the field, which do not
+		 * properly implement the specification and fail to start
+		 * sending Source Capability messages after a soft reset. The
+		 * specification suggests to do a hard reset when no Source
+		 * capability message is received within PD_T_SINK_WAIT_CAP,
+		 * but that might effectively kil the machine's power source.
+		 *
+		 * This slightly diverges from the specification and tries to
+		 * recover from this by explicitly asking for the capabilities
+		 * using the Get_Source_Cap control message before falling back
+		 * to a hard reset. The control message should also be supported
+		 * and handled by all USB PD source and dual role devices
+		 * according to the specification.
+		 */
+		if (tcpm_pd_send_control(dev, PD_CTRL_GET_SOURCE_CAP))
+			tcpm_set_state_cond(dev, hard_reset_state(port), 0);
+		else
+			tcpm_set_state(dev, hard_reset_state(port), PD_T_SINK_WAIT_CAP);
 		break;
 	case SNK_NEGOTIATE_CAPABILITIES:
 		port->pd_capable = true;
@@ -1683,6 +1733,8 @@ static void run_state_machine(struct udevice *dev)
 
 	/* Hard_Reset states */
 	case HARD_RESET_SEND:
+		if (!port->self_powered && port->port_type == TYPEC_PORT_SNK)
+			dev_err(dev, "Initiating hard-reset, which might result in machine power-loss.\n");
 		tcpm_pd_transmit(dev, TCPC_TX_HARD_RESET, NULL);
 		tcpm_set_state(dev, HARD_RESET_START, 0);
 		port->wait_dr_swap_message = false;
@@ -2227,6 +2279,17 @@ static int tcpm_port_init(struct udevice *dev)
 	return 0;
 }
 
+static inline void tcpm_poll_one_event(struct udevice *dev)
+{
+	const struct dm_tcpm_ops *drvops = dev_get_driver_ops(dev);
+	struct tcpm_port *port = dev_get_uclass_plat(dev);
+
+	drvops->poll_event(dev);
+	port->poll_event_cnt++;
+	udelay(500);
+	tcpm_check_and_run_delayed_work(dev);
+}
+
 static void tcpm_poll_event(struct udevice *dev)
 {
 	const struct dm_tcpm_ops *drvops = dev_get_driver_ops(dev);
@@ -2240,15 +2303,25 @@ static void tcpm_poll_event(struct udevice *dev)
 		    (port->state == SNK_READY || port->state == SRC_READY))
 			break;
 
-		drvops->poll_event(dev);
-		port->poll_event_cnt++;
-		udelay(500);
-		tcpm_check_and_run_delayed_work(dev);
+		tcpm_poll_one_event(dev);
 	}
 
-	if (port->state != SNK_READY && port->state != SRC_READY)
+	/*
+	 * Some power-supplies send GetSinkCap shortly after they are ready.
+	 * If they do not receive a response after a few retries they will issue
+	 * a soft-reset followed by a hard reset, which kills the board power.
+	 * Let's poll for 50ms after reaching the ready state to check if the
+	 * power-supply wants something from us.
+	 */
+	if (port->state == SNK_READY) {
+		port->poll_event_cnt = 0;
+
+		while (port->poll_event_cnt < 100)
+			tcpm_poll_one_event(dev);
+	} else {
 		dev_warn(dev, "TCPM: exit in state %s\n",
 			 tcpm_states[port->state]);
+	}
 
 	/*
 	 * At this time, call the callback function of the respective pd chip

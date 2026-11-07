@@ -459,7 +459,19 @@ static int device_get_dma_constraints(struct udevice *dev)
 	u64 size = 0;
 	int ret;
 
-	if (!CONFIG_IS_ENABLED(DM_DMA) || !parent || !dev_has_ofnode(parent))
+	if (!CONFIG_IS_ENABLED(DM_DMA) || !parent)
+		return 0;
+
+	/* Look for the first node in the parent chain */
+	while (parent) {
+		if (dev_has_ofnode(parent))
+			break;
+
+		parent = dev_get_parent(parent);
+	}
+
+	/* No parents have a node, bail out */
+	if (!parent)
 		return 0;
 
 	/*

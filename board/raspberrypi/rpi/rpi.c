@@ -371,6 +371,10 @@ static void set_fdtfile(void)
 	const char *fdtfile;
 	int rev = revision & 0x0f;
 
+	/* 2GB Pi 5B board rev 1.0 always has BCM2712D0 silicon */
+	if (revision == 0xb04170)
+		rev = 1;
+
 	if (env_get("fdtfile"))
 		return;
 

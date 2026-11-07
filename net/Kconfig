@@ -16,7 +16,7 @@ if NET
 
 choice
 	prompt "Networking stack"
-	default NET_LEGACY
+	default NET_LWIP
 
 config NET_LEGACY
 	bool "Legacy U-Boot networking stack"
@@ -27,6 +27,7 @@ config NET_LEGACY
 
 config NET_LWIP
 	bool "Use lwIP for networking stack"
+	default y
 	select NETDEVICES
 	help
 	  Include networking support based on the lwIP (lightweight IP)

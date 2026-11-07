@@ -516,6 +516,7 @@ endif
 
 config CMD_BOOTMENU
 	bool "bootmenu"
+	default y
 	select MENU
 	select CHARSET
 	help
@@ -2289,6 +2290,7 @@ config CMD_WGET
 
 config WGET_HTTPS
 	bool "wget https"
+	default y
 	depends on CMD_WGET
 	depends on PROT_TCP_LWIP
 	depends on MBEDTLS_LIB

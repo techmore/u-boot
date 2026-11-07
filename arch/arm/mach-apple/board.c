@@ -7,11 +7,15 @@
 #include <dm/uclass-internal.h>
 #include <efi_loader.h>
 #include <env.h>
+#include <fs.h>
+#include <malloc.h>
+#include <mapmem.h>
 #include <lmb.h>
 #include <nvme.h>
 #include <part.h>
 
 #include <asm/armv8/mmu.h>
+#include <asm/cache.h>
 #include <asm/global_data.h>
 #include <asm/io.h>
 #include <asm/system.h>
@@ -752,6 +756,147 @@ static struct mm_region t8122_mem_map[] = {
 	}
 };
 
+/* Apple M4 */
+
+static struct mm_region t8132_mem_map[] = {
+	{
+		/* I/O */
+		.virt = 0x200000000,
+		.phys = 0x200000000,
+		.size = 14UL * SZ_1G + SZ_512M,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRNE) |
+			 PTE_BLOCK_NON_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE */
+		.virt = 0x800000000,
+		.phys = 0x800000000,
+		.size = 8UL * SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE */
+		.virt = 0xa00000000,
+		.phys = 0xa00000000,
+		.size = 2UL * SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE */
+		.virt = 0xa80000000,
+		.phys = 0xa80000000,
+		.size = SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE */
+		.virt = 0xac0000000,
+		.phys = 0xac0000000,
+		.size = SZ_512M,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE */
+		.virt = 0xb80000000,
+		.phys = 0xb80000000,
+		.size = SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE */
+		.virt = 0xbc0000000,
+		.phys = 0xbc0000000,
+		.size = SZ_512M,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE */
+		.virt = 0xc00000000,
+		.phys = 0xc00000000,
+		.size = 8UL * SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE */
+		.virt = 0xe00000000,
+		.phys = 0xe00000000,
+		.size = 2UL * SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE */
+		.virt = 0x1000000000,
+		.phys = 0x1000000000,
+		.size = 8UL * SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE */
+		.virt = 0x1200000000,
+		.phys = 0x1200000000,
+		.size = 2UL * SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE */
+		.virt = 0x1400000000,
+		.phys = 0x1400000000,
+		.size = 8UL * SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE */
+		.virt = 0x1600000000,
+		.phys = 0x1600000000,
+		.size = 2UL * SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE controller I/O */
+		.virt = 0x1c50000000,
+		.phys = 0x1c50000000,
+		.size = SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRNE) |
+			 PTE_BLOCK_NON_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* PCIE controller I/O */
+		.virt = 0x1cb0000000,
+		.phys = 0x1cb0000000,
+		.size = SZ_256M,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRNE) |
+			 PTE_BLOCK_NON_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* RAM */
+		.virt = 0x10000000000,
+		.phys = 0x10000000000,
+		.size = 8UL * SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_NORMAL) |
+			 PTE_BLOCK_INNER_SHARE
+	}, {
+		/* Framebuffer */
+		.attrs = PTE_BLOCK_MEMTYPE(MT_NORMAL_NC) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* List terminator */
+		0,
+	}
+};
+
 /* Apple M3 Pro and Max */
 
 static struct mm_region t6030_mem_map[] = {
@@ -1019,6 +1164,8 @@ void build_mem_map(void)
 		mem_map = t6022_mem_map;
 	else if (of_machine_is_compatible("apple,t8122"))
 		mem_map = t8122_mem_map;
+	else if (of_machine_is_compatible("apple,t8132"))
+		mem_map = t8132_mem_map;
 	else if (of_machine_is_compatible("apple,t6030") ||
 		 of_machine_is_compatible("apple,t6031") ||
 		 of_machine_is_compatible("apple,t6034"))
@@ -1076,7 +1223,7 @@ u64 get_page_table_size(void)
 	return SZ_256K;
 }
 
-static char *asahi_esp_devpart(void)
+static char *gravity_esp_devpart(void)
 {
 	struct disk_partition info;
 	struct blk_desc *nvme_blk;
@@ -1091,7 +1238,7 @@ static char *asahi_esp_devpart(void)
 
 	node = ofnode_path("/chosen");
 	if (ofnode_valid(node)) {
-		uuid = ofnode_get_property(node, "asahi,efi-system-partition",
+		uuid = ofnode_get_property(node, "gravity,efi-system-partition",
 					   &len);
 	}
 
@@ -1103,7 +1250,8 @@ static char *asahi_esp_devpart(void)
 
 		dev = dev_get_parent(nvme_blk->bdev);
 		if (!device_is_compatible(dev, "apple,nvme-ans2") &&
-		    !device_is_compatible(dev, "apple,t8103-nvme-ans2"))
+		    !device_is_compatible(dev, "apple,t8103-nvme-ans2") &&
+		    !device_is_compatible(dev, "apple,t8132-nvme-ans2"))
 			continue;
 
 		for (p = 1; p <= MAX_SEARCH_PARTITIONS; p++) {
@@ -1142,7 +1290,7 @@ const char *env_fat_get_intf(void)
 
 char *env_fat_get_dev_part(void)
 {
-	return asahi_esp_devpart();
+	return gravity_esp_devpart();
 }
 
 #define KERNEL_COMP_SIZE	SZ_128M
@@ -1155,7 +1303,7 @@ int board_late_init(void)
 	phys_addr_t addr;
 
 	env_set("storage_interface", blk_get_uclass_name(UCLASS_NVME));
-	env_set("fw_dev_part", asahi_esp_devpart());
+	env_set("fw_dev_part", gravity_esp_devpart());
 
 	/* somewhat based on the Linux Kernel boot requirements:
 	 * align by 2M and maximal FDT size 2M
@@ -1182,11 +1330,79 @@ int board_late_init(void)
 	return 0;
 }
 
+/* Calibration belongs to one radio; never use a board-wide fallback file. */
+static void apple_radio_calibration(void *blob, const char *compatible,
+				    const char *property, const char *address_property,
+				    const char *name, const char *kind, bool reverse)
+{
+	const unsigned char *address;
+	unsigned char mac[6];
+	loff_t size, actual;
+	char path[96];
+	char *devpart;
+	void *data;
+	int node, len, ret, i;
+
+	node = fdt_node_offset_by_compatible(blob, -1, compatible);
+	if (node < 0 || fdt_getprop(blob, node, property, NULL))
+		return;
+
+	address = fdt_getprop(blob, node, address_property, &len);
+	if (!address || len != 6)
+		return;
+	/* Bluetooth's local-bd-address is little endian; Wi-Fi's MAC is not. */
+	for (i = 0; i < 6; i++)
+		mac[i] = address[reverse ? 5 - i : i];
+	if ((mac[0] & 1) || !memcmp(mac, "\0\0\0\0\0\0", 6)) {
+		printf("%s: invalid radio address\n", name);
+		return;
+	}
+	snprintf(path, sizeof(path),
+		 "vendorfw/u-boot/brcm/%s-%02x%02x%02x%02x%02x%02x-%s.bin",
+		 name, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], kind);
+
+	devpart = gravity_esp_devpart();
+	if (!*devpart || fs_set_blk_dev("nvme", devpart, FS_TYPE_FAT) ||
+	    fs_size(path, &size)) {
+		printf("%s: no per-radio calibration on ESP\n", name);
+		return;
+	}
+	if (size < 4 || size > SZ_32K) {
+		printf("%s: invalid calibration size\n", name);
+		return;
+	}
+	data = memalign(ARCH_DMA_MINALIGN, ALIGN(size, ARCH_DMA_MINALIGN));
+	if (!data)
+		return;
+	/* fs_size closes the filesystem, so select it again before reading. */
+	if (fs_set_blk_dev("nvme", devpart, FS_TYPE_FAT) ||
+	    fs_read(path, map_to_sysmem(data), 0, size, &actual) ||
+	    actual != size || memcmp(data, "BLOB", 4)) {
+		printf("%s: cannot read valid calibration\n", name);
+		goto out;
+	}
+	ret = fdt_setprop(blob, node, property, data, size);
+	if (ret)
+		printf("%s: cannot add calibration to DT: %s\n", name, fdt_strerror(ret));
+	else
+		printf("%s: loaded %lld bytes of per-radio calibration\n",
+		       name, (long long)size);
+out:
+	free(data);
+}
+
 int ft_board_setup(void *blob, struct bd_info *bd)
 {
 	struct udevice *dev;
 	const char *stdoutname;
 	int node, ret;
+
+	if (!fdt_node_check_compatible(blob, 0, "apple,j773g")) {
+		apple_radio_calibration(blob, "pci14e4,5f72", "brcm,taurus-bf-cal-blob",
+					"local-bd-address", "brcmbt4388", "bf", true);
+		apple_radio_calibration(blob, "pci14e4,4434", "brcm,cal-blob",
+					"local-mac-address", "brcmfmac4388", "cal", false);
+	}
 
 	/*
 	 * Modify the "stdout-path" property under "/chosen" to point

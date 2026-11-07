@@ -110,7 +110,7 @@ dtb-$(CONFIG_ARCH_TEGRA) += \
 	tegra124-venice2.dtb \
 	tegra124-xiaomi-mocha.dtb \
 	tegra186-p2771-0000-000.dtb \
-	tegra186-p2771-0000-500.dtb \
+	tegra186-p2771-0000.dtb \
 	tegra210-p2371-0000.dtb \
 	tegra210-p2371-2180.dtb \
 	tegra210-p2571.dtb \

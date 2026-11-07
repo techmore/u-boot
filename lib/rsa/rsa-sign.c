@@ -19,7 +19,9 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/evp.h>
+#ifndef OPENSSL_NO_ENGINE
 #include <openssl/engine.h>
+#endif
 
 static int rsa_err(const char *msg)
 {
@@ -89,6 +91,7 @@ err_cert:
 	return ret;
 }
 
+#ifndef OPENSSL_NO_ENGINE
 /**
  * rsa_engine_get_pub_key() - read a public key from given engine
  *
@@ -157,6 +160,7 @@ static int rsa_engine_get_pub_key(const char *keydir, const char *name,
 
 	return 0;
 }
+#endif
 
 /**
  * rsa_get_pub_key() - read a public key
@@ -170,8 +174,10 @@ static int rsa_engine_get_pub_key(const char *keydir, const char *name,
 static int rsa_get_pub_key(const char *keydir, const char *name,
 			   ENGINE *engine, EVP_PKEY **evpp)
 {
+#ifndef OPENSSL_NO_ENGINE
 	if (engine)
 		return rsa_engine_get_pub_key(keydir, name, engine, evpp);
+#endif
 	return rsa_pem_get_pub_key(keydir, name, evpp);
 }
 
@@ -217,6 +223,7 @@ static int rsa_pem_get_priv_key(const char *keydir, const char *name,
 	return 0;
 }
 
+#ifndef OPENSSL_NO_ENGINE
 /**
  * rsa_engine_get_priv_key() - read a private key from given engine
  *
@@ -293,6 +300,7 @@ static int rsa_engine_get_priv_key(const char *keydir, const char *name,
 
 	return 0;
 }
+#endif
 
 /**
  * rsa_get_priv_key() - read a private key
@@ -306,9 +314,11 @@ static int rsa_engine_get_priv_key(const char *keydir, const char *name,
 static int rsa_get_priv_key(const char *keydir, const char *name,
 			    const char *keyfile, ENGINE *engine, EVP_PKEY **evpp)
 {
+#ifndef OPENSSL_NO_ENGINE
 	if (engine)
 		return rsa_engine_get_priv_key(keydir, name, keyfile, engine,
 					       evpp);
+#endif
 	return rsa_pem_get_priv_key(keydir, name, keyfile, evpp);
 }
 
@@ -325,6 +335,7 @@ static int rsa_init(void)
 	return 0;
 }
 
+#ifndef OPENSSL_NO_ENGINE
 static int rsa_engine_init(const char *engine_id, ENGINE **pe)
 {
 	const char *key_pass;
@@ -380,6 +391,7 @@ static void rsa_engine_remove(ENGINE *e)
 		ENGINE_free(e);
 	}
 }
+#endif
 
 static int rsa_sign_with_key(EVP_PKEY *pkey, struct padding_algo *padding_algo,
 			     struct checksum_algo *checksum_algo,
@@ -480,11 +492,13 @@ int rsa_sign(struct image_sign_info *info,
 	if (ret)
 		return ret;
 
+#ifndef OPENSSL_NO_ENGINE
 	if (info->engine_id) {
 		ret = rsa_engine_init(info->engine_id, &e);
 		if (ret)
 			return ret;
 	}
+#endif
 
 	ret = rsa_get_priv_key(info->keydir, info->keyname, info->keyfile,
 			       e, &pkey);
@@ -495,17 +509,21 @@ int rsa_sign(struct image_sign_info *info,
 	if (ret)
 		goto err_sign;
 
+#ifndef OPENSSL_NO_ENGINE
 	EVP_PKEY_free(pkey);
 	if (info->engine_id)
 		rsa_engine_remove(e);
 
 	return ret;
+#endif
 
 err_sign:
 	EVP_PKEY_free(pkey);
 err_priv:
+#ifndef OPENSSL_NO_ENGINE
 	if (info->engine_id)
 		rsa_engine_remove(e);
+#endif
 	return ret;
 }
 
@@ -645,11 +663,13 @@ int rsa_add_verify_data(struct image_sign_info *info, void *keydest)
 	ENGINE *e = NULL;
 
 	debug("%s: Getting verification data\n", __func__);
+#ifndef OPENSSL_NO_ENGINE
 	if (info->engine_id) {
 		ret = rsa_engine_init(info->engine_id, &e);
 		if (ret)
 			return ret;
 	}
+#endif
 	ret = rsa_get_pub_key(info->keydir, info->keyname, e, &pkey);
 	if (ret)
 		goto err_get_pub_key;
@@ -726,8 +746,10 @@ done:
 err_get_params:
 	EVP_PKEY_free(pkey);
 err_get_pub_key:
+#ifndef OPENSSL_NO_ENGINE
 	if (info->engine_id)
 		rsa_engine_remove(e);
+#endif
 
 	if (ret)
 		return ret;

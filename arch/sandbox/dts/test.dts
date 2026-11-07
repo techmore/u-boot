@@ -656,6 +656,15 @@
 		subnode@0 {
 			compatible = "denx,u-boot-fdt-test";
 		};
+		bus@7 {
+			#address-cells = <1>;
+			#size-cells = <1>;
+			compatible = "denx,u-boot-test-bus";
+
+			subnode@8 {
+				  compatible = "denx,u-boot-fdt-test";
+			};
+		};
 	};
 
 	mmio-bus@1 {

@@ -660,7 +660,6 @@ config BOOTMETH_QFW
 config BOOTMETH_VBE
 	bool "Bootdev support for Verified Boot for Embedded"
 	depends on FIT
-	default y
 	select BOOTMETH_GLOBAL
 	select EVENT
 	help
@@ -1579,6 +1578,7 @@ config BOOTDELAY
 
 config AUTOBOOT_KEYED
 	bool "Stop autobooting via specific input key / string"
+	default y
 	help
 	  This option enables stopping (aborting) of the automatic
 	  boot feature only by issuing a specific input key or
@@ -1738,6 +1738,7 @@ endif  # AUTOBOOT
 
 config AUTOBOOT_MENU_SHOW
 	bool "Show a menu on boot"
+	default y
 	depends on CMD_BOOTMENU
 	help
 	  This enables the boot menu, controlled by environment variables

@@ -619,6 +619,7 @@ struct nvme_dev {
 	u32 page_size;
 	u8 vwc;
 	u64 *prp_pool;
+	uintptr_t prp_pool_dma;
 	u32 prp_entry_num;
 	u32 nn;
 };
@@ -637,7 +638,9 @@ enum nvme_queue_id {
 struct nvme_queue {
 	struct nvme_dev *dev;
 	struct nvme_command *sq_cmds;
+	dma_addr_t sq_dma_addr;
 	struct nvme_completion *cqes;
+	dma_addr_t cq_dma_addr;
 	u32 __iomem *q_db;
 	u16 q_depth;
 	s16 cq_vector;
@@ -666,12 +669,27 @@ struct nvme_ns {
 
 struct nvme_ops {
 	/**
+	 * poll - Service controller firmware while waiting for hardware.
+	 * @dev: NVM Express controller
+	 * Return: 0 if OK, -ve on error
+	 */
+	int (*poll)(struct nvme_dev *dev);
+	/**
 	 * setup_queue - Controller-specific NVM Express queue setup.
 	 *
 	 * @nvmeq: NVM Express queue
 	 * Return: 0 if OK, -ve on error
 	 */
 	int (*setup_queue)(struct nvme_queue *nvmeq);
+	/**
+	 * register_queue - Controller-specific NVM Express queue registration.
+	 *
+	 * This is called after the Create Completion Queue and Create Submission
+	 * Queue commands have completed.
+	 *
+	 * @nvmeq: NVM Express queue
+	 */
+	void (*register_queue)(struct nvme_queue *nvmeq);
 	/**
 	 * submit_cmd - Controller-specific NVM Express command submission.
 	 *

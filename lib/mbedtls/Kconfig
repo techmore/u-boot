@@ -2,7 +2,7 @@
 
 choice
 	prompt "Crypto libraries (U-Boot Proper)"
-	default LEGACY_HASHING_AND_CRYPTO
+	default MBEDTLS_LIB
 	help
 	  Select crypto libraries.
 	  LEGACY_HASHING_AND_CRYPTO for legacy crypto libraries,
@@ -15,6 +15,7 @@ config LEGACY_HASHING_AND_CRYPTO
 
 config MBEDTLS_LIB
 	bool "MbedTLS libraries"
+	default y
 	select MBEDTLS_LIB_X509
 endchoice
 
