@@ -1307,6 +1307,16 @@ int board_late_init(void)
 	u32 status = 0;
 	phys_addr_t addr;
 
+	/*
+	 * TEST ONLY (track A): once U-Boot has a keyboard, a key pending at
+	 * the bootdelay=0 abort check would stop autoboot in the silent
+	 * console, with the watchdog still being petted.  -2 = autoboot
+	 * without looking for a key, which is what a keyboard-less J773g
+	 * boot does today.  Set here so a uboot.env on the ESP cannot undo it.
+	 */
+	if (of_machine_is_compatible("apple,j773g"))
+		env_set("bootdelay", "-2");
+
 	env_set("storage_interface", blk_get_uclass_name(UCLASS_NVME));
 	env_set("fw_dev_part", gravity_esp_devpart());
 
@@ -1526,6 +1536,12 @@ int ft_board_setup(void *blob, struct bd_info *bd)
 					"local-bd-address", "brcmbt4388", "bf", true);
 		apple_radio_calibration(blob, "pci14e4,4434", "brcm,cal-blob",
 					"local-mac-address", "brcmfmac4388", "cal", false);
+		/*
+		 * TEST ONLY (track A): keep the DT the OS gets identical to
+		 * the U1 baseline once U-Boot finds the front keyboard: do
+		 * not retarget stdout-path at /chosen/framebuffer below.
+		 */
+		return 0;
 	}
 
 	/*
