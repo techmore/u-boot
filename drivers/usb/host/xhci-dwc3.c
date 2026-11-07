@@ -226,6 +226,15 @@ static int xhci_dwc3_probe(struct udevice *dev)
 static int xhci_dwc3_remove(struct udevice *dev)
 {
 	struct xhci_dwc3_plat *plat = dev_get_plat(dev);
+	int ret = 0;
+
+	/*
+	 * TEST ONLY (J773g boot-menu track A): on the T8132 front controller
+	 * halt and reset xHCI (no more DMA) before its PHY goes and dwc3 is
+	 * clamped.  Other controllers keep the original order.
+	 */
+	if (device_is_compatible(dev, "apple,t8132-dwc3"))
+		ret = xhci_deregister(dev);
 
 	dwc3_shutdown_phy(dev, &plat->phys);
 
@@ -233,7 +242,10 @@ static int xhci_dwc3_remove(struct udevice *dev)
 
 	reset_release_bulk(&plat->resets);
 
-	return xhci_deregister(dev);
+	if (!device_is_compatible(dev, "apple,t8132-dwc3"))
+		ret = xhci_deregister(dev);
+
+	return ret;
 }
 
 static const struct udevice_id xhci_dwc3_ids[] = {

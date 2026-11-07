@@ -5,6 +5,7 @@
 
 #include <dm.h>
 #include <dm/uclass-internal.h>
+#include <bootm.h>
 #include <command.h>
 #include <efi_loader.h>
 #include <env.h>
@@ -1603,6 +1604,29 @@ static void apple_typec_late_init(void)
 		env_set("preboot", "");
 }
 
+/*
+ * TEST ONLY (J773g boot-menu track A): at OS handoff, stop USB on the J773g
+ * before dm_remove_devices_active() runs, i.e. before ExitBootServices (or
+ * bootm) removes the DARTs and the ATC PHY.  usb_stop() removes the xHCI,
+ * which halts and resets it first (see xhci_dwc3_remove()), so no DMA is in
+ * flight when the IOMMU drops its translations and the PHY is never stopped
+ * under a running controller.  Only the front ATC2 controller can bind on
+ * the J773g.  This relies on device_remove() leaving the power domain on,
+ * which holds because apple-pmgr has no .off op.  Every other machine keeps
+ * the generic driver flags and today's removal order.
+ */
+void board_quiesce_devices(void)
+{
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_USB_HOST) ||
+	    !of_machine_is_compatible("apple,j773g"))
+		return;
+
+	ret = usb_stop();
+	m4_track_a_note("handoff usb_stop ret=%d", ret);
+}
+
 int board_late_init(void)
 {
 	bool start_keyboard = true;
@@ -1798,8 +1822,15 @@ int ft_board_setup(void *blob, struct bd_info *bd)
 					   asahi_esp_uuid);
 	}
 
-	if (of_machine_is_compatible("apple,j773g"))
+	if (of_machine_is_compatible("apple,j773g")) {
 		m4_track_a_chosen(blob);
+		/*
+		 * TEST ONLY (track A): keep the DT the OS gets identical to
+		 * the baseline once U-Boot finds the front keyboard: do not
+		 * retarget stdout-path at /chosen/framebuffer below.
+		 */
+		return 0;
+	}
 
 	/*
 	 * Modify the "stdout-path" property under "/chosen" to point
