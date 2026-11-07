@@ -11,7 +11,7 @@
 #define __ASM_ARCH_APPLE_TRACK_A_H
 
 /* Identifies the U-Boot variant in the evidence; bumped by each track-A step. */
-#define M4_TRACK_A_TAG	"A1"
+#define M4_TRACK_A_TAG	"A-DART"
 
 #if IS_ENABLED(CONFIG_ARCH_APPLE)
 void m4_track_a_note(const char *fmt, ...)
