@@ -1281,8 +1281,14 @@ static int xhci_lowlevel_init(struct xhci_ctrl *ctrl)
 static int xhci_lowlevel_stop(struct xhci_ctrl *ctrl)
 {
 	u32 temp;
+	int ret;
 
-	xhci_reset(ctrl->hcor);
+	/* TEST ONLY (track A): a controller that did not halt may still DMA. */
+	ret = xhci_reset(ctrl->hcor);
+	if (ret) {
+		printf("xHCI did not halt and reset (%d)\n", ret);
+		return ret;
+	}
 
 	debug("// Disabling event ring interrupts\n");
 	temp = xhci_readl(&ctrl->hcor->or_usbsts);
@@ -1467,8 +1473,12 @@ err:
 int xhci_deregister(struct udevice *dev)
 {
 	struct xhci_ctrl *ctrl = dev_get_priv(dev);
+	int ret;
 
-	xhci_lowlevel_stop(ctrl);
+	/* Never unmap or free memory a controller that did not stop may use. */
+	ret = xhci_lowlevel_stop(ctrl);
+	if (ret)
+		return ret;
 	xhci_cleanup(ctrl);
 
 	return 0;

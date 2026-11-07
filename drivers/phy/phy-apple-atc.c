@@ -565,5 +565,10 @@ U_BOOT_DRIVER(apple_atcphy_reset) = {
 	.probe = apple_atcphy_reset_probe,
 	.remove = apple_atcphy_reset_remove,
 	.priv_auto = sizeof(struct apple_atcphy_priv),
-	.flags = DM_FLAG_OS_PREPARE,
+	/*
+	 * Vital: removed in the second OS-prepare pass, after the dwc3/xHCI
+	 * consumer (non-vital) was halted, so the PHY is never stopped and
+	 * dwc3 never clamped under a running controller.
+	 */
+	.flags = DM_FLAG_OS_PREPARE | DM_FLAG_VITAL,
 };

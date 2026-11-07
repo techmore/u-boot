@@ -226,6 +226,20 @@ static int xhci_dwc3_probe(struct udevice *dev)
 static int xhci_dwc3_remove(struct udevice *dev)
 {
 	struct xhci_dwc3_plat *plat = dev_get_plat(dev);
+	int ret;
+
+	/* Halt and reset the controller (no more DMA) before its PHY goes. */
+	ret = xhci_deregister(dev);
+	/*
+	 * TEST ONLY (track A): if it did not halt, its rings stay mapped and
+	 * allocated, and nothing may go on: callers such as
+	 * dm_remove_devices_active() at ExitBootServices ignore errors, and
+	 * the OS would get memory a running DMA master still writes.
+	 * panic() resets the machine (PANIC_HANG off) before the OS starts.
+	 */
+	if (ret)
+		panic("%s: xHCI did not halt and reset (%d); not handing its DMA memory on\n",
+		      dev->name, ret);
 
 	dwc3_shutdown_phy(dev, &plat->phys);
 
@@ -233,7 +247,7 @@ static int xhci_dwc3_remove(struct udevice *dev)
 
 	reset_release_bulk(&plat->resets);
 
-	return xhci_deregister(dev);
+	return ret;
 }
 
 static const struct udevice_id xhci_dwc3_ids[] = {
@@ -251,6 +265,14 @@ U_BOOT_DRIVER(xhci_dwc3) = {
 	.ops = &xhci_usb_ops,
 	.priv_auto	= sizeof(struct xhci_ctrl),
 	.plat_auto	= sizeof(struct xhci_dwc3_plat),
-	.flags = DM_FLAG_ALLOC_PRIV_DMA,
+	/*
+	 * Removed at OS handoff in the non-vital pass, i.e. before the
+	 * (vital) IOMMU drops its translations: no DMA may be in flight then.
+	 * This relies on device_remove() leaving the power domain on, which
+	 * holds on Apple because apple-pmgr has no .off op: if it gains one,
+	 * the DARTs sharing ATC2_USB would be written unpowered in the second
+	 * pass.
+	 */
+	.flags = DM_FLAG_ALLOC_PRIV_DMA | DM_FLAG_OS_PREPARE,
 };
 #endif
