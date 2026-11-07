@@ -9,14 +9,19 @@
 #include <efi_loader.h>
 #include <env.h>
 #include <fs.h>
+#include <iomux.h>
 #include <u-boot/uuid.h>
 #include <lmb.h>
 #include <nvme.h>
 #include <part.h>
+#include <stdarg.h>
+#include <usb.h>
+#include <vsprintf.h>
 #include <time.h>
 #include <linux/ioport.h>
 #include <linux/delay.h>
 
+#include <asm/arch/track-a.h>
 #include <asm/armv8/mmu.h>
 #include <asm/global_data.h>
 #include <asm/io.h>
@@ -1652,6 +1657,97 @@ int board_late_init(void)
 	return 0;
 }
 
+/*
+ * TEST ONLY: J773g boot-menu track A1 (observability).  Publish what U-Boot
+ * saw on its USB buses and which devices feed its console as /chosen
+ * properties of the DT handed to the OS.  This runs when the EFI loader
+ * installs the DT, i.e. after preboot's "usb start" and before ExitBootServices
+ * removes the USB devices.  Observation only: it probes nothing and touches no
+ * hardware.
+ */
+static char m4_track_a_log[512];
+
+void m4_track_a_note(const char *fmt, ...)
+{
+	size_t len = strlen(m4_track_a_log);
+	va_list args;
+
+	if (len + 2 >= sizeof(m4_track_a_log))
+		return;
+	if (len)
+		m4_track_a_log[len++] = ';';
+	va_start(args, fmt);
+	vsnprintf(m4_track_a_log + len, sizeof(m4_track_a_log) - len, fmt, args);
+	va_end(args);
+}
+
+static void m4_cat(char *buf, size_t size, const char *fmt, ...)
+{
+	size_t len = strlen(buf);
+	va_list args;
+
+	if (len + 1 >= size)
+		return;
+	va_start(args, fmt);
+	vsnprintf(buf + len, size - len, fmt, args);
+	va_end(args);
+}
+
+/* "devnum/parent vid:pid speed driver" for every active device behind a hub */
+static void m4_usb_walk(struct udevice *hub, int parent, char *buf, size_t size)
+{
+	struct udevice *child;
+
+	device_foreach_child(child, hub) {
+		struct usb_device *udev;
+
+		if (!device_active(child))
+			continue;
+		udev = dev_get_parent_priv(child);
+		if (!udev)
+			continue;
+		m4_cat(buf, size, " %d/%d %04x:%04x s%d %s;", udev->devnum, parent,
+		       udev->descriptor.idVendor, udev->descriptor.idProduct,
+		       udev->speed, child->driver->name);
+		if (device_get_uclass_id(child) == UCLASS_USB_HUB)
+			m4_usb_walk(child, udev->devnum, buf, size);
+	}
+}
+
+static void m4_track_a_chosen(void *blob)
+{
+	char buf[512] = "";
+	struct stdio_dev *sdev;
+	struct udevice *bus;
+	struct uclass *uc;
+	int node, i;
+
+	node = fdt_path_offset(blob, "/chosen");
+	if (node < 0)
+		return;
+
+	fdt_setprop_string(blob, node, "u-boot,m4-track-a", M4_TRACK_A_TAG);
+	fdt_setprop_string(blob, node, "u-boot,m4-stdin", env_get("stdin") ?: "");
+
+	if (IS_ENABLED(CONFIG_CONSOLE_MUX)) {
+		for_each_console_dev(i, stdin, sdev)
+			m4_cat(buf, sizeof(buf), "%s%s", i ? "," : "", sdev->name);
+	}
+	fdt_setprop_string(blob, node, "u-boot,m4-stdin-active", buf);
+
+	buf[0] = '\0';
+	if (!uclass_get(UCLASS_USB, &uc)) {
+		uclass_foreach_dev(bus, uc) {
+			if (!device_active(bus))
+				continue;
+			m4_cat(buf, sizeof(buf), "[%s]", bus->name);
+			m4_usb_walk(bus, 0, buf, sizeof(buf));
+		}
+	}
+	fdt_setprop_string(blob, node, "u-boot,m4-usb", buf);
+	fdt_setprop_string(blob, node, "u-boot,m4-log", m4_track_a_log);
+}
+
 int ft_board_setup(void *blob, struct bd_info *bd)
 {
 	struct udevice *dev;
@@ -1701,6 +1797,9 @@ int ft_board_setup(void *blob, struct bd_info *bd)
 			fdt_setprop_string(blob, node, "asahi,efi-system-partition",
 					   asahi_esp_uuid);
 	}
+
+	if (of_machine_is_compatible("apple,j773g"))
+		m4_track_a_chosen(blob);
 
 	/*
 	 * Modify the "stdout-path" property under "/chosen" to point
