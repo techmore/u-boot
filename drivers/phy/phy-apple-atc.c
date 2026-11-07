@@ -108,8 +108,12 @@
 #define J773G_ATC2_PIPEHANDLER	0x412a84000
 #define ATC_BANK_SIZE		0x4000
 
+#define PIPEHANDLER_T8132_USB2_CONFIG	0x44
+#define  PIPEHANDLER_T8132_USB2_CONFIG_EN	BIT(2)
+
 struct apple_atcphy_priv {
 	bool t8132;		/* J773g front ATC2, USB2-only two-bank form */
+	bool t8132_up;		/* T8132 USB2 host bring-up done at probe */
 	bool usb2_only;		/* A18 Pro: USB2 through a fixed hub */
 	void __iomem *core;
 	void __iomem *pipehandler;
@@ -198,6 +202,57 @@ static void atcphy_usb2_power_off(struct apple_atcphy_priv *priv)
 	udelay(10);
 	set32(priv->usb2phy + USB2PHY_MISCTUNE, USB2PHY_MISCTUNE_APBCLK_GATE_OFF);
 	set32(priv->usb2phy + USB2PHY_MISCTUNE, USB2PHY_MISCTUNE_REFCLK_GATE_OFF);
+}
+
+/*
+ * T8132 USB2-only fixed-hub port (J773g front ATC2), as Linux atc.c at U1
+ * 0714d188 (with the USB2PHY_SIG host-field fix): no core bank, no EVT
+ * register, no eUSB2 repeater delay or tunables, and the PIPE parked on the
+ * dummy clock through PIPEHANDLER 0x44 rather than NONSELECTED_OVERRIDE.
+ */
+static void atcphy_t8132_usb2_power_on(struct apple_atcphy_priv *priv)
+{
+	set32(priv->usb2phy + USB2PHY_SIG,
+	      USB2PHY_SIG_VBUSDET_FORCE_VAL | USB2PHY_SIG_VBUSDET_FORCE_EN |
+	      USB2PHY_SIG_VBUSVLDEXT_FORCE_VAL | USB2PHY_SIG_VBUSVLDEXT_FORCE_EN);
+	udelay(10);
+	clear32(priv->usb2phy + USB2PHY_CTL, USB2PHY_CTL_SIDDQ);
+	udelay(10);
+	clear32(priv->usb2phy + USB2PHY_CTL, USB2PHY_CTL_RESET);
+	udelay(10);
+	clear32(priv->usb2phy + USB2PHY_CTL, USB2PHY_CTL_PORT_RESET);
+	udelay(10);
+	set32(priv->usb2phy + USB2PHY_CTL, USB2PHY_CTL_APB_RESET_N);
+	udelay(10);
+	clear32(priv->usb2phy + USB2PHY_MISCTUNE, USB2PHY_MISCTUNE_APBCLK_GATE_OFF);
+	clear32(priv->usb2phy + USB2PHY_MISCTUNE, USB2PHY_MISCTUNE_REFCLK_GATE_OFF);
+	writel(USB2PHY_USBCTL_RUN, priv->usb2phy + USB2PHY_USBCTL);
+}
+
+/* Linux atcphy_probe() for a fixed-hub USB2-only T8132 port, dwc3 held in reset. */
+static void atcphy_t8132_bringup(struct apple_atcphy_priv *priv)
+{
+	void __iomem *mux = priv->pipehandler + PIPEHANDLER_MUX_CTRL;
+
+	atcphy_dwc3_reset_assert(priv);
+	atcphy_usb2_power_off(priv);
+	set32(priv->pipehandler + PIPEHANDLER_T8132_USB2_CONFIG,
+	      PIPEHANDLER_T8132_USB2_CONFIG_EN);
+	mask32(mux, PIPEHANDLER_MUX_CTRL_CLK,
+	       FIELD_PREP(PIPEHANDLER_MUX_CTRL_CLK, PIPEHANDLER_MUX_CTRL_CLK_OFF));
+	udelay(10);
+	mask32(mux, PIPEHANDLER_MUX_CTRL_DATA,
+	       FIELD_PREP(PIPEHANDLER_MUX_CTRL_DATA,
+			  PIPEHANDLER_MUX_CTRL_DATA_DUMMY));
+	udelay(10);
+	mask32(mux, PIPEHANDLER_MUX_CTRL_CLK,
+	       FIELD_PREP(PIPEHANDLER_MUX_CTRL_CLK,
+			  PIPEHANDLER_MUX_CTRL_CLK_DUMMY));
+	udelay(10);
+	/* T8132 latches the host role while the USB2 PHY is stopped. */
+	set32(priv->usb2phy + USB2PHY_SIG, USB2PHY_SIG_HOST);
+	atcphy_t8132_usb2_power_on(priv);
+	priv->t8132_up = true;
 }
 
 static int atcphy_usb2_power_on(struct udevice *dev)
@@ -409,6 +464,17 @@ static int apple_atcphy_usb2_init(struct phy *phy)
 	struct apple_atcphy_priv *priv = dev_get_priv(rdev);
 	int ret;
 
+	if (priv->t8132_up && phy->id == PHY_TYPE_USB2) {
+		/* Linux atcphy_usb2_init() for a fixed-hub port */
+		set32(priv->usb2phy + USB2PHY_SIG, USB2PHY_SIG_HOST);
+		atcphy_t8132_usb2_power_on(priv);
+		m4_track_a_note("atc2 init sig=%x ctl=%x usbctl=%x",
+				readl(priv->usb2phy + USB2PHY_SIG),
+				readl(priv->usb2phy + USB2PHY_CTL),
+				readl(priv->usb2phy + USB2PHY_USBCTL));
+		return 0;
+	}
+
 	if (!priv->usb2_only || phy->id != PHY_TYPE_USB2)
 		return 0;
 
@@ -466,7 +532,7 @@ static int apple_atcphy_rst_assert(struct reset_ctl *reset_ctl)
 {
 	struct apple_atcphy_priv *priv = dev_get_priv(reset_ctl->dev);
 
-	if (!priv->usb2_only)
+	if (!priv->usb2_only && !priv->t8132_up)
 		return 0;
 
 	atcphy_dwc3_reset_assert(priv);
@@ -483,12 +549,17 @@ static int apple_atcphy_rst_deassert(struct reset_ctl *reset_ctl)
 		atcphy_dwc3_reset_deassert(priv);
 
 	/*
-	 * T8132 (A2): nothing here brings the controller out of reset yet.
-	 * Let the dwc3 probe go on only if something before U-Boot already
-	 * did, so xHCI never reads a core held in reset (read-only check).
+	 * T8132: release dwc3 (USB2 came up at probe), then check it really
+	 * left reset, so xHCI never reads a core held in reset.
 	 */
-	if (priv->t8132 && !priv->usb2_only) {
-		u32 aon = readl(priv->pipehandler + PIPEHANDLER_AON_GEN);
+	if (priv->t8132) {
+		u32 aon;
+
+		if (priv->t8132_up) {
+			atcphy_t8132_usb2_power_on(priv);
+			atcphy_dwc3_reset_deassert(priv);
+		}
+		aon = readl(priv->pipehandler + PIPEHANDLER_AON_GEN);
 
 		m4_track_a_note("atc2 aon_gen=%x", aon);
 		if (!(aon & PIPEHANDLER_AON_GEN_DWC3_RESET_N) ||
@@ -571,6 +642,7 @@ static int apple_atcphy_reset_probe(struct udevice *dev)
 		priv->pipehandler = dev_read_addr_name_ptr(dev, "pipehandler");
 		if (!priv->usb2phy || !priv->pipehandler)
 			return -EINVAL;
+		atcphy_t8132_bringup(priv);
 	}
 
 	if (device_is_compatible(dev, "apple,t8140-atcphy")) {
@@ -597,6 +669,11 @@ static int apple_atcphy_reset_remove(struct udevice *dev)
 	/* Leave dwc3 in reset and the PHY off for the OS driver. */
 	if (priv->usb2_only)
 		return atcphy_stop(dev);
+	if (priv->t8132_up) {
+		/* Linux order: dwc3 reset + clamp, then USB2 off; no core bank. */
+		atcphy_dwc3_reset_assert(priv);
+		atcphy_usb2_power_off(priv);
+	}
 
 	return 0;
 }
