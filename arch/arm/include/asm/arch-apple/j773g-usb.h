@@ -37,4 +37,40 @@ enum j773g_usb_kind {
 int j773g_usb_node_allowed(const void *fdt, int node, enum j773g_usb_kind kind,
 			   int *sid, const char **why);
 
+/* Front hub setup (track A3): nothing the policy admits may probe unless OK. */
+enum j773g_usb_hub {
+	J773G_USB_HUB_PENDING,
+	J773G_USB_HUB_OK,
+	J773G_USB_HUB_BLOCKED,
+};
+
+/*
+ * The single gate: 0 if @node may probe, -EPERM if the policy admits it (as a
+ * dwc3, ATC PHY or DART, whatever its name or path) and @hub is not OK,
+ * -EINVAL if the node cannot be looked up (callers refuse then too).
+ */
+int j773g_usb_probe_gate(const void *fdt, int node, enum j773g_usb_hub hub);
+
+/* The two front-hub lines, in the order A3 drives them. */
+#define J773G_HUB_LINES		2
+#define J773G_HUB_FLASH_OE_PIN	101
+#define J773G_HUB_FLASH_OE_NAME	"usb3hub-flash-oe"
+#define J773G_HUB_RESET_PIN	198
+#define J773G_HUB_RESET_NAME	"usb3hub-reset"
+
+/*
+ * Check every gpio-hog under the GPIO controller @pctl (fail closed): each must
+ * parse completely (#gpio-cells 2; gpios = exactly one specifier; exactly one
+ * of input / output-low / output-high; line-name, if any, one string).  A hog
+ * naming a hub pin or a hub line must be exactly that line, active-high,
+ * output-high, and appear once; both hub lines must be present.  0 and @pins
+ * (flash-OE, reset) on success, else -EINVAL and *why.
+ */
+int j773g_hub_hogs_check(const void *fdt, int pctl, uint32_t pins[J773G_HUB_LINES],
+			 const char **why);
+
+#ifndef J773G_POLICY_HOST
+enum j773g_usb_hub j773g_usb_hub_state(void);
+#endif
+
 #endif

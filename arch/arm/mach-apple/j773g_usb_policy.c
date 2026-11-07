@@ -19,6 +19,7 @@
 #endif
 
 #define REFUSE(msg) do { if (why) *why = (msg); return -ENODEV; } while (0)
+#define REFUSE_INVAL(msg) do { if (why) *why = (msg); return -EINVAL; } while (0)
 
 static uint32_t cell(const void *p, int i)
 {
@@ -172,4 +173,88 @@ int j773g_usb_node_allowed(const void *fdt, int node, enum j773g_usb_kind kind,
 	}
 
 	REFUSE("unknown kind");
+}
+
+static const struct {
+	uint32_t pin;
+	const char *name;
+} j773g_hub_lines[J773G_HUB_LINES] = {
+	{ J773G_HUB_FLASH_OE_PIN, J773G_HUB_FLASH_OE_NAME },
+	{ J773G_HUB_RESET_PIN, J773G_HUB_RESET_NAME },
+};
+
+int j773g_hub_hogs_check(const void *fdt, int pctl, uint32_t pins[J773G_HUB_LINES],
+			 const char **why)
+{
+	const void *cells;
+	unsigned int seen = 0;
+	int hog, len, i;
+
+	if (why)
+		*why = NULL;
+	cells = fdt ? fdt_getprop(fdt, pctl, "#gpio-cells", &len) : NULL;
+	if (!cells || len != 4 || cell(cells, 0) != 2)
+		REFUSE_INVAL("hogs: GPIO controller is not #gpio-cells = 2");
+
+	fdt_for_each_subnode(hog, fdt, pctl) {
+		const char *name = NULL;
+		const void *g;
+		int by_pin = -1, by_name = -1, dirs;
+		uint32_t pin, flags;
+
+		if (!fdt_getprop(fdt, hog, "gpio-hog", NULL))
+			continue;
+		/* Every hog must parse completely, hub line or not. */
+		g = fdt_getprop(fdt, hog, "gpios", &len);
+		if (!g || len != 8)
+			REFUSE_INVAL("hogs: a gpio-hog has no single two-cell gpios");
+		pin = cell(g, 0);
+		flags = cell(g, 1);
+		dirs = !!fdt_getprop(fdt, hog, "input", NULL) +
+		       !!fdt_getprop(fdt, hog, "output-low", NULL) +
+		       !!fdt_getprop(fdt, hog, "output-high", NULL);
+		if (dirs != 1)
+			REFUSE_INVAL("hogs: a gpio-hog has no single direction");
+		if (fdt_getprop(fdt, hog, "line-name", &len)) {
+			if (fdt_stringlist_count(fdt, hog, "line-name") != 1)
+				REFUSE_INVAL("hogs: a gpio-hog line-name is not one string");
+			name = fdt_stringlist_get(fdt, hog, "line-name", 0, NULL);
+		}
+
+		for (i = 0; i < J773G_HUB_LINES; i++) {
+			if (j773g_hub_lines[i].pin == pin)
+				by_pin = i;
+			if (name && !strcmp(j773g_hub_lines[i].name, name))
+				by_name = i;
+		}
+		if (by_pin < 0 && by_name < 0)
+			continue;	/* a well-formed hog for another line */
+		if (by_pin != by_name)
+			REFUSE_INVAL("hogs: a hub pin and line name do not match");
+		if (flags != 0 || !fdt_getprop(fdt, hog, "output-high", NULL))
+			REFUSE_INVAL("hogs: a hub line is not active-high output-high");
+		if (seen & (1u << by_pin))
+			REFUSE_INVAL("hogs: a hub line has more than one hog");
+		seen |= 1u << by_pin;
+	}
+
+	if (seen != (1u << J773G_HUB_LINES) - 1)
+		REFUSE_INVAL("hogs: a hub line has no hog");
+	for (i = 0; i < J773G_HUB_LINES; i++)
+		pins[i] = j773g_hub_lines[i].pin;
+	return 0;
+}
+
+int j773g_usb_probe_gate(const void *fdt, int node, enum j773g_usb_hub hub)
+{
+	int kind;
+
+	if (!fdt || node < 0)
+		return -EINVAL;
+	for (kind = J773G_USB_DWC3; kind <= J773G_USB_DART; kind++) {
+		if (!j773g_usb_node_allowed(fdt, node, kind, NULL, NULL))
+			return hub == J773G_USB_HUB_OK ? 0 : -EPERM;
+	}
+
+	return 0;
 }
