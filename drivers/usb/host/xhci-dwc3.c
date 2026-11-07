@@ -248,8 +248,26 @@ static int xhci_dwc3_remove(struct udevice *dev)
 	return ret;
 }
 
+/*
+ * TEST ONLY (J773g boot-menu track A): of the T8132 controllers only the
+ * front ATC2 one behind the fixed hub may bind, and only on J773g.  The rear
+ * ports (one is the DFU/recovery port) are never touched, whatever the DT.
+ */
+#define J773G_ATC2_DWC3		0x412280000
+
+static int xhci_dwc3_bind(struct udevice *dev)
+{
+	if (device_is_compatible(dev, "apple,t8132-dwc3") &&
+	    (!ofnode_device_is_compatible(ofnode_root(), "apple,j773g") ||
+	     dev_read_addr(dev) != J773G_ATC2_DWC3))
+		return -ENODEV;
+
+	return 0;
+}
+
 static const struct udevice_id xhci_dwc3_ids[] = {
 	{ .compatible = "apple,t8103-dwc3" },
+	{ .compatible = "apple,t8132-dwc3" },
 	{ .compatible = "snps,dwc3" },
 	{ }
 };
@@ -258,6 +276,7 @@ U_BOOT_DRIVER(xhci_dwc3) = {
 	.name = "xhci-dwc3",
 	.id = UCLASS_USB,
 	.of_match = xhci_dwc3_ids,
+	.bind = xhci_dwc3_bind,
 	.probe = xhci_dwc3_probe,
 	.remove = xhci_dwc3_remove,
 	.ops = &xhci_usb_ops,

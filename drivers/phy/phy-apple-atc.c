@@ -17,6 +17,7 @@
 #include <generic-phy.h>
 #include <reset-uclass.h>
 #include <asm/io.h>
+#include <asm/arch/track-a.h>
 #include <dt-bindings/phy/phy.h>
 #include <linux/bitfield.h>
 #include <linux/delay.h>
@@ -98,7 +99,17 @@
 #define  USB2PHY_MISCTUNE_APBCLK_GATE_OFF BIT(29)
 #define  USB2PHY_MISCTUNE_REFCLK_GATE_OFF BIT(30)
 
+/*
+ * TEST ONLY (J773g boot-menu track A): the T8132 ATC PHY is matched only for
+ * the front ATC2 port of J773g, in its USB2-only two-bank form
+ * ("usb2phy", "pipehandler").  Any other T8132 ATC PHY refuses to bind.
+ */
+#define J773G_ATC2_USB2PHY	0x412a90000
+#define J773G_ATC2_PIPEHANDLER	0x412a84000
+#define ATC_BANK_SIZE		0x4000
+
 struct apple_atcphy_priv {
+	bool t8132;		/* J773g front ATC2, USB2-only two-bank form */
 	bool usb2_only;		/* A18 Pro: USB2 through a fixed hub */
 	void __iomem *core;
 	void __iomem *pipehandler;
@@ -471,6 +482,20 @@ static int apple_atcphy_rst_deassert(struct reset_ctl *reset_ctl)
 	if (priv->usb2_only)
 		atcphy_dwc3_reset_deassert(priv);
 
+	/*
+	 * T8132 (A2): nothing here brings the controller out of reset yet.
+	 * Let the dwc3 probe go on only if something before U-Boot already
+	 * did, so xHCI never reads a core held in reset (read-only check).
+	 */
+	if (priv->t8132 && !priv->usb2_only) {
+		u32 aon = readl(priv->pipehandler + PIPEHANDLER_AON_GEN);
+
+		m4_track_a_note("atc2 aon_gen=%x", aon);
+		if (!(aon & PIPEHANDLER_AON_GEN_DWC3_RESET_N) ||
+		    (aon & PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN))
+			return -EIO;
+	}
+
 	return 0;
 }
 
@@ -515,11 +540,38 @@ static int apple_atcphy_t8140_probe(struct udevice *dev)
 	return 0;
 }
 
+static bool apple_atcphy_j773g_atc2(struct udevice *dev)
+{
+	fdt_size_t s0, s1;
+
+	return ofnode_device_is_compatible(ofnode_root(), "apple,j773g") &&
+	       dev_read_addr_size_name(dev, "usb2phy", &s0) == J773G_ATC2_USB2PHY &&
+	       dev_read_addr_size_name(dev, "pipehandler", &s1) == J773G_ATC2_PIPEHANDLER &&
+	       s0 == ATC_BANK_SIZE && s1 == ATC_BANK_SIZE;
+}
+
+static int apple_atcphy_reset_bind(struct udevice *dev)
+{
+	if (device_is_compatible(dev, "apple,t8132-atcphy") &&
+	    !apple_atcphy_j773g_atc2(dev))
+		return -ENODEV;
+
+	return 0;
+}
+
 static int apple_atcphy_reset_probe(struct udevice *dev)
 {
 	struct apple_atcphy_priv *priv = dev_get_priv(dev);
 	struct udevice *child;
 	int ret;
+
+	if (device_is_compatible(dev, "apple,t8132-atcphy")) {
+		priv->t8132 = true;
+		priv->usb2phy = dev_read_addr_name_ptr(dev, "usb2phy");
+		priv->pipehandler = dev_read_addr_name_ptr(dev, "pipehandler");
+		if (!priv->usb2phy || !priv->pipehandler)
+			return -EINVAL;
+	}
 
 	if (device_is_compatible(dev, "apple,t8140-atcphy")) {
 		ret = apple_atcphy_t8140_probe(dev);
@@ -554,6 +606,7 @@ static const struct udevice_id apple_atcphy_ids[] = {
 	{ .compatible = "apple,t8103-atcphy" },
 	{ .compatible = "apple,t8122-atcphy" },
 	{ .compatible = "apple,t8140-atcphy" },
+	{ .compatible = "apple,t8132-atcphy" },
 	{ }
 };
 
@@ -562,6 +615,7 @@ U_BOOT_DRIVER(apple_atcphy_reset) = {
 	.id = UCLASS_RESET,
 	.of_match = apple_atcphy_ids,
 	.ops = &apple_atcphy_reset_ops,
+	.bind = apple_atcphy_reset_bind,
 	.probe = apple_atcphy_reset_probe,
 	.remove = apple_atcphy_reset_remove,
 	.priv_auto = sizeof(struct apple_atcphy_priv),
