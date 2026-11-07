@@ -8,12 +8,17 @@
 #include <efi_loader.h>
 #include <env.h>
 #include <fs.h>
+#include <iomux.h>
 #include <malloc.h>
 #include <mapmem.h>
 #include <lmb.h>
 #include <nvme.h>
 #include <part.h>
+#include <stdarg.h>
+#include <usb.h>
+#include <vsprintf.h>
 
+#include <asm/arch/track-a.h>
 #include <asm/armv8/mmu.h>
 #include <asm/cache.h>
 #include <asm/global_data.h>
@@ -1391,6 +1396,124 @@ out:
 	free(data);
 }
 
+/*
+ * TEST ONLY: J773g boot-menu track A1 (observability).  Publish what U-Boot
+ * saw on its USB buses and which devices feed its console as /chosen
+ * properties of the DT handed to the OS.  This runs when the EFI loader
+ * installs the DT, i.e. after preboot's "usb start" and before ExitBootServices
+ * removes the USB devices.  Observation only: it probes nothing and touches no
+ * hardware.
+ */
+static char m4_track_a_log[1024];
+static bool m4_track_a_log_trunc;
+
+void m4_track_a_note(const char *fmt, ...)
+{
+	size_t len = strlen(m4_track_a_log);
+	va_list args;
+	int n;
+
+	if (len + 2 >= sizeof(m4_track_a_log)) {
+		m4_track_a_log_trunc = true;
+		return;
+	}
+	if (len)
+		m4_track_a_log[len++] = ';';
+	va_start(args, fmt);
+	n = vsnprintf(m4_track_a_log + len, sizeof(m4_track_a_log) - len, fmt, args);
+	va_end(args);
+	if (n < 0 || n >= sizeof(m4_track_a_log) - len)
+		m4_track_a_log_trunc = true;
+}
+
+/* Append to @buf; set *trunc when it does not fit. */
+static void m4_cat(char *buf, size_t size, bool *trunc, const char *fmt, ...)
+{
+	size_t len = strlen(buf);
+	va_list args;
+	int n;
+
+	if (len + 1 >= size) {
+		*trunc = true;
+		return;
+	}
+	va_start(args, fmt);
+	n = vsnprintf(buf + len, size - len, fmt, args);
+	va_end(args);
+	if (n < 0 || n >= size - len)
+		*trunc = true;
+}
+
+/* "devnum/parent vid:pid speed driver" for every active device behind a hub */
+static void m4_usb_walk(struct udevice *hub, int parent, char *buf, size_t size,
+			bool *trunc)
+{
+	struct udevice *child;
+
+	device_foreach_child(child, hub) {
+		struct usb_device *udev;
+
+		if (!device_active(child))
+			continue;
+		udev = dev_get_parent_priv(child);
+		if (!udev)
+			continue;
+		m4_cat(buf, size, trunc, " %d/%d %04x:%04x s%d %s;", udev->devnum,
+		       parent, udev->descriptor.idVendor,
+		       udev->descriptor.idProduct, udev->speed, child->driver->name);
+		if (device_get_uclass_id(child) == UCLASS_USB_HUB)
+			m4_usb_walk(child, udev->devnum, buf, size, trunc);
+	}
+}
+
+/*
+ * Captured when the EFI loader installs the DT (after "usb start", before
+ * ExitBootServices).  Teardown at ExitBootServices is not recorded here: a
+ * teardown that cannot stop DMA resets the machine before Linux instead.
+ * u-boot,m4-status is written last: absent = incomplete record; otherwise it
+ * says "ok" or names what failed or was truncated.
+ */
+static void m4_track_a_chosen(void *blob)
+{
+	char usb[1024] = "", in[256] = "", status[160];
+	bool trunc_usb = false, trunc_in = false;
+	struct stdio_dev *sdev;
+	struct udevice *bus;
+	struct uclass *uc;
+	int node, i, err = 0;
+
+	node = fdt_path_offset(blob, "/chosen");
+	if (node < 0) {
+		log_err("track-a: no /chosen (%d)\n", node);
+		return;
+	}
+
+	if (IS_ENABLED(CONFIG_CONSOLE_MUX)) {
+		for_each_console_dev(i, stdin, sdev)
+			m4_cat(in, sizeof(in), &trunc_in, "%s%s", i ? "," : "", sdev->name);
+	}
+	if (!uclass_get(UCLASS_USB, &uc)) {
+		uclass_foreach_dev(bus, uc) {
+			if (!device_active(bus))
+				continue;
+			m4_cat(usb, sizeof(usb), &trunc_usb, "[%s]", bus->name);
+			m4_usb_walk(bus, 0, usb, sizeof(usb), &trunc_usb);
+		}
+	}
+
+	err |= fdt_setprop_string(blob, node, "u-boot,m4-track-a", M4_TRACK_A_TAG);
+	err |= fdt_setprop_string(blob, node, "u-boot,m4-stdin", env_get("stdin") ?: "");
+	err |= fdt_setprop_string(blob, node, "u-boot,m4-stdin-active", in);
+	err |= fdt_setprop_string(blob, node, "u-boot,m4-usb", usb);
+	err |= fdt_setprop_string(blob, node, "u-boot,m4-log", m4_track_a_log);
+
+	snprintf(status, sizeof(status), "%s%s%s%s; captured at EFI DT install",
+		 err ? "setprop-error" : "ok", trunc_in ? " trunc:stdin-active" : "",
+		 trunc_usb ? " trunc:usb" : "", m4_track_a_log_trunc ? " trunc:log" : "");
+	if (fdt_setprop_string(blob, node, "u-boot,m4-status", status) || err)
+		log_err("track-a: /chosen record incomplete (%d)\n", err);
+}
+
 int ft_board_setup(void *blob, struct bd_info *bd)
 {
 	struct udevice *dev;
@@ -1398,6 +1521,7 @@ int ft_board_setup(void *blob, struct bd_info *bd)
 	int node, ret;
 
 	if (!fdt_node_check_compatible(blob, 0, "apple,j773g")) {
+		m4_track_a_chosen(blob);
 		apple_radio_calibration(blob, "pci14e4,5f72", "brcm,taurus-bf-cal-blob",
 					"local-bd-address", "brcmbt4388", "bf", true);
 		apple_radio_calibration(blob, "pci14e4,4434", "brcm,cal-blob",
