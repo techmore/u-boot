@@ -17,9 +17,15 @@
 #include <linux/delay.h>
 
 #include <usb/xhci.h>
+#include <asm/global_data.h>
 #include <asm/io.h>
+#if IS_ENABLED(CONFIG_ARCH_APPLE)
+#include <asm/arch/j773g-usb.h>
+#endif
 #include <linux/usb/dwc3.h>
 #include <linux/usb/otg.h>
+
+DECLARE_GLOBAL_DATA_PTR;
 
 struct xhci_dwc3_plat {
 	struct clk_bulk clks;
@@ -250,8 +256,43 @@ static int xhci_dwc3_remove(struct udevice *dev)
 	return ret;
 }
 
+/*
+ * TEST ONLY (J773g boot-menu track A).  On J773g only the front ATC2
+ * controller may bind, with exactly the PHY, reset, power domain and both
+ * IOMMU references the U1 DT gives it (asm/arch/j773g-usb.h), whichever
+ * compatible matched: the rear ports (one is the DFU/recovery port) never
+ * bind, even with an apple,t8103-dwc3 or snps,dwc3 fallback.  The check runs
+ * at bind, before device_probe() powers the domain or connects the IOMMU.
+ * Elsewhere a node bound only through the new apple,t8132-dwc3 entry is
+ * refused, so other machines bind exactly as before.
+ */
+#define XHCI_DWC3_T8132	1
+
+static int xhci_dwc3_bind(struct udevice *dev)
+{
+#if IS_ENABLED(CONFIG_ARCH_APPLE)
+	const char *why;
+
+	if (of_machine_is_compatible("apple,j773g")) {
+		if (j773g_usb_node_allowed(gd->fdt_blob, dev_of_offset(dev),
+					   J773G_USB_DWC3, NULL, &why)) {
+			log_debug("%s: refused: %s\n", dev->name, why);
+			return -ENODEV;
+		}
+		return 0;
+	}
+#endif
+	if (dev_get_driver_data(dev) == XHCI_DWC3_T8132 &&
+	    !device_is_compatible(dev, "apple,t8103-dwc3") &&
+	    !device_is_compatible(dev, "snps,dwc3"))
+		return -ENODEV;
+
+	return 0;
+}
+
 static const struct udevice_id xhci_dwc3_ids[] = {
 	{ .compatible = "apple,t8103-dwc3" },
+	{ .compatible = "apple,t8132-dwc3", .data = XHCI_DWC3_T8132 },
 	{ .compatible = "snps,dwc3" },
 	{ }
 };
@@ -260,6 +301,7 @@ U_BOOT_DRIVER(xhci_dwc3) = {
 	.name = "xhci-dwc3",
 	.id = UCLASS_USB,
 	.of_match = xhci_dwc3_ids,
+	.bind = xhci_dwc3_bind,
 	.probe = xhci_dwc3_probe,
 	.remove = xhci_dwc3_remove,
 	.ops = &xhci_usb_ops,

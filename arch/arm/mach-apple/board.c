@@ -1505,7 +1505,14 @@ static void apple_efi_late_init(bool start_keyboard)
 		env_set("bootcmd", "run aurora_boot");
 	if (!strcmp(env_get("boot_targets") ?: "", "nvme usb"))
 		env_set("boot_targets", "nvme");
-	if (!strcmp(env_get("preboot") ?: "", "usb start"))
+	/*
+	 * TEST ONLY (J773g boot-menu track A2): the J773g has no built-in
+	 * keyboard; keep "usb start" for its front ATC2 port, the only USB
+	 * controller U-Boot binds there (xhci-dwc3 and the DARTs refuse the
+	 * others).
+	 */
+	if (!strcmp(env_get("preboot") ?: "", "usb start") &&
+	    !of_machine_is_compatible("apple,j773g"))
 		env_set("preboot", "");
 	/* EFI ConIn uses the active stdin; keep serial input available. */
 	if (start_keyboard && IS_ENABLED(CONFIG_APPLE_MTP_KEYB) &&
